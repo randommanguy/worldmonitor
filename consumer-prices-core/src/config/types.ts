@@ -49,16 +49,24 @@ export const DiscoverySeedSchema = z.object({
   category: z.string().optional(),
 });
 
+export const SearchConfigSchema = z.object({
+  numResults: z.number().default(3),
+  queryTemplate: z.string().optional(),
+  urlPathContains: z.string().optional(),
+  inStockFromPrice: z.boolean().default(false),
+});
+
 export const RetailerConfigSchema = z.object({
   retailer: z.object({
     slug: z.string(),
     name: z.string(),
     marketCode: z.string().length(2),
     currencyCode: z.string().length(3),
-    adapter: z.enum(['generic', 'exa-search', 'custom']).default('generic'),
+    adapter: z.enum(['generic', 'exa-search', 'search', 'custom']).default('generic'),
     baseUrl: z.string().url(),
     rateLimit: RateLimitSchema.optional(),
-    acquisition: AcquisitionConfigSchema,
+    acquisition: AcquisitionConfigSchema.optional(),
+    searchConfig: SearchConfigSchema.optional(),
     discovery: z.object({
       mode: z.enum(['category_urls', 'sitemap', 'search']).default('category_urls'),
       seeds: z.array(DiscoverySeedSchema),
@@ -81,6 +89,7 @@ export const RetailerConfigSchema = z.object({
 });
 
 export type RetailerConfig = z.infer<typeof RetailerConfigSchema>['retailer'];
+export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
 export const BasketItemSchema = z.object({
   id: z.string(),
@@ -91,6 +100,11 @@ export const BasketItemSchema = z.object({
   substitutionGroup: z.string().optional(),
   minBaseQty: z.number().optional(),
   maxBaseQty: z.number().optional(),
+  // Lowercase tokens that, if present in an extracted productName, mark the hit
+  // as a class mismatch (e.g. "canned" for fresh tomatoes). Intended for obvious
+  // class errors; product-taxonomy distinctions like plain vs greek yogurt
+  // belong in separate substitutionGroup values, not here.
+  negativeTokens: z.array(z.string()).optional(),
   qualificationRules: z.record(z.string(), z.unknown()).optional(),
 });
 

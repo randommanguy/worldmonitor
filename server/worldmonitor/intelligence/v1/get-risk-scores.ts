@@ -8,7 +8,9 @@ import type {
   SeverityLevel,
 } from '../../../../src/generated/server/worldmonitor/intelligence/v1/service_server';
 
+import iso3ToIso2Json from '../../../../shared/iso3-to-iso2.json';
 import { getCachedJson, setCachedJson, cachedFetchJsonWithMeta } from '../../../_shared/redis';
+import { CLIMATE_ANOMALIES_KEY } from '../../../_shared/cache-keys';
 import { TIER1_COUNTRIES } from './_shared';
 import { fetchAcledCached } from '../../../_shared/acled';
 
@@ -140,15 +142,7 @@ function safeNum(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// ISO3 → ISO2 mapping for displacement data (UNHCR uses ISO3)
-const ISO3_TO_ISO2: Record<string, string> = {
-  USA: 'US', RUS: 'RU', CHN: 'CN', UKR: 'UA', IRN: 'IR', ISR: 'IL',
-  TWN: 'TW', PRK: 'KP', SAU: 'SA', TUR: 'TR', POL: 'PL', DEU: 'DE',
-  FRA: 'FR', GBR: 'GB', IND: 'IN', PAK: 'PK', SYR: 'SY', YEM: 'YE',
-  MMR: 'MM', VEN: 'VE', CUB: 'CU', MEX: 'MX', BRA: 'BR', ARE: 'AE',
-  KOR: 'KR', IRQ: 'IQ', AFG: 'AF', LBN: 'LB', EGY: 'EG', JPN: 'JP',
-  QAT: 'QA',
-};
+const ISO3_TO_ISO2: Record<string, string> = iso3ToIso2Json;
 
 interface CountrySignals {
   protests: number;
@@ -175,6 +169,8 @@ interface CountrySignals {
   orefHistoryCount24h: number;
   advisoryLevel: 'do-not-travel' | 'reconsider' | 'caution' | null;
   totalDisplaced: number;
+  newsScore: number;
+  threatSummaryScore: number;
 }
 
 function emptySignals(): CountrySignals {
@@ -189,6 +185,8 @@ function emptySignals(): CountrySignals {
     orefAlertCount: 0, orefHistoryCount24h: 0,
     advisoryLevel: null,
     totalDisplaced: 0,
+    newsScore: 0,
+    threatSummaryScore: 0,
   };
 }
 
@@ -233,14 +231,17 @@ interface AuxiliarySources {
   advisories: { byCountry: Record<string, 'do-not-travel' | 'reconsider' | 'caution'> } | null;
   // Per-country displaced population by ISO3 code (UNHCR — persists after ceasefires)
   displacedByIso3: Record<string, number>;
+  newsTopStories: Array<{ countryCode: string | null; threatLevel: string; primaryTitle: string }>;
+  // Per-country classified headline counts from relay seedClassify() — written to news:threat:summary:v1
+  threatSummaryByCountry: Record<string, { critical: number; high: number; medium: number; low: number; info: number }> | null;
 }
 
 async function fetchAuxiliarySources(): Promise<AuxiliarySources> {
   const currentYear = new Date().getFullYear();
-  const [ucdpRaw, outagesRaw, climateRaw, cyberRaw, firesRaw, gpsRaw, iranRaw, orefRaw, advisoriesRaw, displacementRaw] = await Promise.all([
+  const [ucdpRaw, outagesRaw, climateRaw, cyberRaw, firesRaw, gpsRaw, iranRaw, orefRaw, advisoriesRaw, displacementRaw, insightsRaw, threatSummaryRaw] = await Promise.all([
     getCachedJson('conflict:ucdp-events:v1', true).catch(() => null),
     getCachedJson('infra:outages:v1', true).catch(() => null),
-    getCachedJson('climate:anomalies:v1', true).catch(() => null),
+    getCachedJson(CLIMATE_ANOMALIES_KEY, true).catch(() => null),
     getCachedJson('cyber:threats-bootstrap:v2', true).catch(() => null),
     getCachedJson('wildfire:fires:v1', true).catch(() => null),
     getCachedJson('intelligence:gpsjam:v2', true).catch(() => null),
@@ -251,6 +252,8 @@ async function fetchAuxiliarySources(): Promise<AuxiliarySources> {
     getCachedJson(`displacement:summary:v1:${currentYear}`, true)
       .catch(() => null)
       .then(d => d ?? getCachedJson(`displacement:summary:v1:${currentYear - 1}`, true).catch(() => null)),
+    getCachedJson('news:insights:v1', true).catch(() => null),
+    getCachedJson('news:threat:summary:v1', true).catch(() => null),
   ]);
   const arr = (v: any, field?: string, maxLen = 10000) => {
     let a: any[];
@@ -282,6 +285,19 @@ async function fetchAuxiliarySources(): Promise<AuxiliarySources> {
     }
   }
 
+  const rawStories: any[] = insightsRaw && Array.isArray((insightsRaw as any).topStories)
+    ? (insightsRaw as any).topStories
+    : [];
+  const newsTopStories = rawStories.map((s: any) => ({
+    countryCode: typeof s.countryCode === 'string' ? s.countryCode : null,
+    threatLevel: typeof s.threatLevel === 'string' ? s.threatLevel.toLowerCase() : 'low',
+    primaryTitle: typeof s.primaryTitle === 'string' ? s.primaryTitle : '',
+  }));
+  const threatSummaryByCountry: AuxiliarySources['threatSummaryByCountry'] =
+    threatSummaryRaw && typeof threatSummaryRaw === 'object' && (threatSummaryRaw as any).byCountry
+      ? (threatSummaryRaw as any).byCountry
+      : null;
+
   return {
     ucdpEvents: arr(ucdpRaw, 'events'),
     outages: arr(outagesRaw, 'outages'),
@@ -295,6 +311,8 @@ async function fetchAuxiliarySources(): Promise<AuxiliarySources> {
       ? { byCountry: (advisoriesRaw as any).byCountry }
       : null,
     displacedByIso3,
+    newsTopStories,
+    threatSummaryByCountry,
   };
 }
 
@@ -415,6 +433,35 @@ export function computeCIIScores(
     data.IL.orefHistoryCount24h = aux.orefData.historyCount24h;
   }
 
+  // --- News insights threat scoring ---
+  const THREAT_WEIGHT: Record<string, number> = {
+    critical: 4, high: 2, medium: 1, elevated: 1, moderate: 0.5, low: 0.5, info: 0,
+  };
+  for (const story of aux.newsTopStories) {
+    const weight = THREAT_WEIGHT[story.threatLevel] ?? 0;
+    if (weight === 0) continue;
+    // Primary attribution via countryCode from seed-insights geo-extraction
+    let code: string | null = story.countryCode && data[story.countryCode] ? story.countryCode : null;
+    // Fallback: keyword match on title
+    if (!code) code = normalizeCountryName(story.primaryTitle);
+    const signals = code ? data[code] : undefined;
+    if (signals) signals.newsScore += weight;
+  }
+
+  // --- News threat summary (from relay seedClassify — all classified headlines) ---
+  if (aux.threatSummaryByCountry) {
+    const SUMMARY_WEIGHT: Record<string, number> = { critical: 4, high: 2, medium: 1, low: 0.5, info: 0 };
+    for (const [code, counts] of Object.entries(aux.threatSummaryByCountry)) {
+      const signals = data[code];
+      if (!signals) continue;
+      let score = 0;
+      for (const [lvl, w] of Object.entries(SUMMARY_WEIGHT)) {
+        score += (counts[lvl as keyof typeof counts] || 0) * w;
+      }
+      signals.threatSummaryScore = Math.min(20, score);
+    }
+  }
+
   // --- Scoring ---
   const scores: CiiScore[] = [];
   for (const code of Object.keys(TIER1_COUNTRIES)) {
@@ -446,7 +493,7 @@ export function computeCIIScores(
     const gpsJammingScore = Math.min(35, d.gpsHighCount * 5 + d.gpsMediumCount * 2);
     const security = Math.min(100, Math.round(gpsJammingScore));
 
-    const information = 0;
+    const information = Math.min(20, d.newsScore + d.threatSummaryScore);
 
     const eventScore = unrest * 0.25 + conflict * 0.30 + security * 0.20 + information * 0.25;
 
@@ -550,7 +597,7 @@ export async function getRiskScores(
   _req: GetRiskScoresRequest,
 ): Promise<GetRiskScoresResponse> {
   try {
-    const { data: result } = await cachedFetchJsonWithMeta<GetRiskScoresResponse>(
+    const { data: result, source } = await cachedFetchJsonWithMeta<GetRiskScoresResponse>(
       RISK_CACHE_KEY,
       RISK_CACHE_TTL,
       async () => {
@@ -565,13 +612,44 @@ export async function getRiskScores(
     );
     if (result) {
       await setCachedJson(RISK_STALE_CACHE_KEY, result, RISK_STALE_TTL).catch(() => {});
+      // Write seed-meta on every FRESH upstream fetch so /api/health.riskScores
+      // stays green from real user traffic, independent of the ais-relay
+      // CII warm-ping. Pre-2026-05-02 the warm-ping was the SOLE writer of
+      // this seed-meta — when the relay → api.worldmonitor.app auth path
+      // broke (all warm-ping types started returning HTTP 401 simultaneously),
+      // riskScores was the only key that flipped STALE because cable-health
+      // and chokepoints had RPC-side seed-meta writes keeping them fresh
+      // via real user traffic. This brings riskScores into the same pattern
+      // as those two: defense-in-depth, no single point of freshness failure.
+      //
+      // Gated on source === 'fresh' (PR #3562 review P2): cachedFetchJsonWithMeta
+      // returns immediately on cache hits with `source: 'cache'`. Stamping
+      // `fetchedAt: Date.now()` on cache hits would conflate "data was
+      // recently re-fetched" with "data was recently served," letting
+      // health.riskScores stay fresh even when upstream stopped responding
+      // (cache would be served until its TTL=600s expired, after which the
+      // first request triggers a fresh fetch and surfaces the failure
+      // properly — but only if seed-meta wasn't already advanced by a cache
+      // hit). Only stamp on actual upstream re-fetches.
+      // 7-day TTL matches the warm-ping write so health.maxStaleMin (30min)
+      // logic is unchanged.
+      if (source === 'fresh') {
+        const count = result.ciiScores?.length || 0;
+        if (count > 0) {
+          await setCachedJson(
+            'seed-meta:intelligence:risk-scores',
+            { fetchedAt: Date.now(), recordCount: count },
+            604800,
+          ).catch(() => {});
+        }
+      }
       return result;
     }
   } catch { /* upstream failed, fall through to stale */ }
 
   const stale = (await getCachedJson(RISK_STALE_CACHE_KEY)) as GetRiskScoresResponse | null;
   if (stale) return stale;
-  const emptyAux: AuxiliarySources = { ucdpEvents: [], outages: [], climate: [], cyber: [], fires: [], gpsHexes: [], iranEvents: [], orefData: null, advisories: null, displacedByIso3: {} };
+  const emptyAux: AuxiliarySources = { ucdpEvents: [], outages: [], climate: [], cyber: [], fires: [], gpsHexes: [], iranEvents: [], orefData: null, advisories: null, displacedByIso3: {}, newsTopStories: [], threatSummaryByCountry: null };
   const ciiScores = computeCIIScores([], emptyAux);
   return { ciiScores, strategicRisks: computeStrategicRisks(ciiScores) };
 }

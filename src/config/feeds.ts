@@ -5,314 +5,10 @@ import { rssProxyUrl } from '@/utils';
 const rss = rssProxyUrl;
 const railwayRss = rssProxyUrl;
 
-// Source tier system for prioritization (lower = more authoritative)
-// Tier 1: Wire services - fastest, most reliable breaking news
-// Tier 2: Major outlets - high-quality journalism
-// Tier 3: Specialty sources - domain expertise
-// Tier 4: Aggregators & blogs - useful but less authoritative
-export const SOURCE_TIERS: Record<string, number> = {
-  // Tier 1 - Wire Services
-  'Reuters': 1,
-  'AP News': 1,
-  'AFP': 1,
-  'Bloomberg': 1,
+// Source tier system — canonical definition lives in server/_shared/source-tiers.ts
+// so server-side code can import it without pulling in client-only modules.
+export { SOURCE_TIERS, getSourceTier } from '../../server/_shared/source-tiers';
 
-  // Tier 2 - Major Outlets
-  'BBC World': 2,
-  'BBC Middle East': 2,
-  'Guardian World': 2,
-  'Guardian ME': 2,
-  'NPR News': 2,
-  'CNN World': 2,
-  'CNBC': 2,
-  'MarketWatch': 2,
-  'Al Jazeera': 2,
-  'Financial Times': 2,
-  'Politico': 2,
-  'Axios': 2,
-  'EuroNews': 2,
-  'France 24': 2,
-  'Le Monde': 2,
-  // Spanish
-  'El País': 2,
-  'El Mundo': 2,
-  'BBC Mundo': 2,
-  // German
-  'Tagesschau': 1,
-  'Der Spiegel': 2,
-  'Die Zeit': 2,
-  'DW News': 2,
-  // Italian
-  'ANSA': 1,
-  'Corriere della Sera': 2,
-  'Repubblica': 2,
-  // Dutch
-  'NOS Nieuws': 1,
-  'NRC': 2,
-  'De Telegraaf': 2,
-  // Swedish
-  'SVT Nyheter': 1,
-  'Dagens Nyheter': 2,
-  'Svenska Dagbladet': 2,
-  'Reuters World': 1,
-  'Reuters Business': 1,
-  'Reuters US': 1,
-  'Fox News': 2,
-  'NBC News': 2,
-  'CBS News': 2,
-  'ABC News': 2,
-  'PBS NewsHour': 2,
-  'Wall Street Journal': 1,
-  'The Hill': 3,
-  'The National': 2,
-  'Yonhap News': 2,
-  'Chosun Ilbo': 2,
-  'OpenAI News': 3,
-  // Portuguese
-  'Brasil Paralelo': 2,
-
-  // Tier 1 - Official Government & International Orgs
-  'White House': 1,
-  'State Dept': 1,
-  'Pentagon': 1,
-  'UN News': 1,
-  'CISA': 1,
-  'Treasury': 2,
-  'DOJ': 2,
-  'DHS': 2,
-  'CDC': 2,
-  'FEMA': 2,
-
-  // Tier 3 - Specialty
-  'Defense One': 3,
-  'Breaking Defense': 3,
-  'The War Zone': 3,
-  'Defense News': 3,
-  'Janes': 3,
-  'Military Times': 2,
-  'Task & Purpose': 3,
-  'USNI News': 2,
-  'gCaptain': 3,
-  'Oryx OSINT': 2,
-  'UK MOD': 1,
-  'Foreign Policy': 3,
-  'The Diplomat': 3,
-  'Bellingcat': 3,
-  'Krebs Security': 3,
-  'Ransomware.live': 3,
-  'Federal Reserve': 3,
-  'SEC': 3,
-  'MIT Tech Review': 3,
-  'Ars Technica': 3,
-  'Atlantic Council': 3,
-  'Foreign Affairs': 3,
-  'CrisisWatch': 3,
-  'CSIS': 3,
-  'RAND': 3,
-  'Brookings': 3,
-  'Carnegie': 3,
-  'IAEA': 1,
-  'WHO': 1,
-  'UNHCR': 1,
-  'Xinhua': 3,
-  'TASS': 3,
-  'RT': 3,
-  'RT Russia': 3,
-  'Layoffs.fyi': 3,
-  'BBC Persian': 2,
-  'Iran International': 3,
-  'Fars News': 3,
-  'MIIT (China)': 1,
-  'MOFCOM (China)': 1,
-  // Turkish
-  'BBC Turkce': 2,
-  'DW Turkish': 2,
-  'Hurriyet': 2,
-  // Polish
-  'TVN24': 2,
-  'Polsat News': 2,
-  'Rzeczpospolita': 2,
-  // Russian (independent)
-  'BBC Russian': 2,
-  'Meduza': 2,
-  'Novaya Gazeta Europe': 2,
-  // Thai
-  'Bangkok Post': 2,
-  'Thai PBS': 2,
-  // Australian
-  'ABC News Australia': 2,
-  'Guardian Australia': 2,
-  // Vietnamese
-  'VnExpress': 2,
-  'Tuoi Tre News': 2,
-
-  // Tier 2 - Premium Startup/VC Sources
-  'Y Combinator Blog': 2,
-  'a16z Blog': 2,
-  'Sequoia Blog': 2,
-  'Crunchbase News': 2,
-  'CB Insights': 2,
-  'PitchBook News': 2,
-  'The Information': 2,
-
-  // Tier 3 - Regional/Specialty Startup Sources
-  'EU Startups': 3,
-  'Tech.eu': 3,
-  'Sifted (Europe)': 3,
-  'The Next Web': 3,
-  'Tech in Asia': 3,
-  'TechCabal (Africa)': 3,
-  'Inc42 (India)': 3,
-  'YourStory': 3,
-  'Paul Graham Essays': 2,
-  'Stratechery': 2,
-  // Asia - Regional
-  'e27 (SEA)': 3,
-  'DealStreetAsia': 3,
-  'Pandaily (China)': 3,
-  '36Kr English': 3,
-  'TechNode (China)': 3,
-  'China Tech News': 3,
-  'The Bridge (Japan)': 3,
-  'Japan Tech News': 3,
-  'Nikkei Tech': 2,
-  'NHK World': 2,
-  'Nikkei Asia': 2,
-  'Korea Tech News': 3,
-  'KED Global': 3,
-  'Entrackr (India)': 3,
-  'India Tech News': 3,
-  'Taiwan Tech News': 3,
-  'GloNewswire (Taiwan)': 4,
-  // LATAM
-  'La Silla Vacía': 3,
-  'LATAM Tech News': 3,
-  'Startups.co (LATAM)': 3,
-  'Contxto (LATAM)': 3,
-  'Brazil Tech News': 3,
-  'Mexico Tech News': 3,
-  'LATAM Fintech': 3,
-  // Africa & MENA
-  'Wamda (MENA)': 3,
-  'Magnitt': 3,
-  // Nigeria
-  'Premium Times': 2,
-  'Vanguard Nigeria': 2,
-  'Channels TV': 2,
-  'Daily Trust': 3,
-  'ThisDay': 2,
-  // Greek
-  'Kathimerini': 2,
-  'Naftemporiki': 2,
-  'in.gr': 3,
-  'iefimerida': 3,
-  'Proto Thema': 3,
-
-  // Tier 3 - Think Tanks
-  'Brookings Tech': 3,
-  'CSIS Tech': 3,
-  'MIT Tech Policy': 3,
-  'Stanford HAI': 2,
-  'AI Now Institute': 3,
-  'OECD Digital': 2,
-  'Bruegel (EU)': 3,
-  'Chatham House Tech': 3,
-  'ISEAS (Singapore)': 3,
-  'ORF Tech (India)': 3,
-  'RIETI (Japan)': 3,
-  'Lowy Institute': 3,
-  'China Tech Analysis': 3,
-  'DigiChina': 2,
-  // Security/Defense Think Tanks
-  'RUSI': 2,
-  'Wilson Center': 3,
-  'GMF': 3,
-  'Stimson Center': 3,
-  'CNAS': 2,
-  // Nuclear & Arms Control
-  'Arms Control Assn': 2,
-  'Bulletin of Atomic Scientists': 2,
-  // Food Security
-  'FAO GIEWS': 2,
-  'EU ISS': 3,
-  // New verified think tanks
-  'War on the Rocks': 2,
-  'AEI': 3,
-  'Responsible Statecraft': 3,
-  'FPRI': 3,
-  'Jamestown': 3,
-
-  // Tier 3 - Policy Sources
-  'Politico Tech': 2,
-  'AI Regulation': 3,
-  'Tech Antitrust': 3,
-  'EFF News': 3,
-  'EU Digital Policy': 3,
-  'Euractiv Digital': 3,
-  'EU Commission Digital': 2,
-  'China Tech Policy': 3,
-  'UK Tech Policy': 3,
-  'India Tech Policy': 3,
-
-  // Tier 2-3 - Podcasts & Newsletters
-  'Acquired Podcast': 2,
-  'All-In Podcast': 2,
-  'a16z Podcast': 2,
-  'This Week in Startups': 3,
-  'The Twenty Minute VC': 2,
-  'Lex Fridman Tech': 3,
-  'The Vergecast': 3,
-  'Decoder (Verge)': 3,
-  'Hard Fork (NYT)': 2,
-  'Pivot (Vox)': 2,
-  'Benedict Evans': 2,
-  'The Pragmatic Engineer': 2,
-  'Lenny Newsletter': 2,
-  'AI Podcast (NVIDIA)': 3,
-  'Gradient Dissent': 3,
-  'Eye on AI': 3,
-  'How I Built This': 2,
-  'Masters of Scale': 2,
-  'The Pitch': 3,
-
-  // Tier 4 - Aggregators
-  'Hacker News': 4,
-  'The Verge': 4,
-  'The Verge AI': 4,
-  'VentureBeat AI': 4,
-  'Yahoo Finance': 4,
-  'TechCrunch Layoffs': 4,
-  'ArXiv AI': 4,
-  'AI News': 4,
-  'Layoffs News': 4,
-
-  // Tier 2 - Positive News Sources (Happy variant)
-  'Good News Network': 2,
-  'Positive.News': 2,
-  'Reasons to be Cheerful': 2,
-  'Optimist Daily': 2,
-  'Yes! Magazine': 2,
-  'My Modern Met': 2,
-  'Upworthy': 3,
-  'DailyGood': 3,
-  'Good Good Good': 3,
-  'GOOD Magazine': 3,
-  'Sunny Skyz': 3,
-  'The Better India': 3,
-  'Mongabay': 3,
-  'Conservation Optimism': 3,
-  'Shareable': 3,
-  'GNN Heroes Spotlight': 3,
-  'GNN Science': 3,
-  'GNN Animals': 3,
-  'GNN Health': 3,
-  'GNN Heroes': 3,
-  'GNN Earth': 3,
-};
-
-export function getSourceTier(sourceName: string): number {
-  return SOURCE_TIERS[sourceName] ?? 4; // Default to tier 4 if unknown
-}
 
 export type SourceType = 'wire' | 'gov' | 'intel' | 'mainstream' | 'market' | 'tech' | 'other';
 
@@ -422,6 +118,8 @@ export const SOURCE_PROPAGANDA_RISK: Record<string, SourceRiskProfile> = {
   'Sputnik': { risk: 'high', stateAffiliated: 'Russia', note: 'Russian state media' },
   'CGTN': { risk: 'high', stateAffiliated: 'China', note: 'Chinese state broadcaster' },
   'Press TV': { risk: 'high', stateAffiliated: 'Iran', note: 'Iranian state media' },
+  'IRNA': { risk: 'high', stateAffiliated: 'Iran', note: 'Iranian state news agency (Islamic Republic News Agency)' },
+  'Mehr News': { risk: 'high', stateAffiliated: 'Iran', note: 'Iranian state-affiliated, Basij-linked' },
   'KCNA': { risk: 'high', stateAffiliated: 'North Korea', note: 'North Korean state media' },
 
   // Medium risk - State-affiliated or known bias
@@ -437,6 +135,8 @@ export const SOURCE_PROPAGANDA_RISK: Record<string, SourceRiskProfile> = {
   'Moscow Times': { risk: 'medium', knownBiases: ['Anti-Kremlin'], note: 'Independent, critical of Russian government' },
 
   // Low risk - Independent with editorial standards (explicit)
+  'Jerusalem Post': { risk: 'low', knownBiases: ['Israeli centre-right'], note: 'English-language Israeli daily of record' },
+  'Ynetnews': { risk: 'low', knownBiases: ['Israeli mainstream'], note: 'Yedioth Ahronoth English edition' },
   'Reuters': { risk: 'low', note: 'Wire service, strict editorial standards' },
   'AP News': { risk: 'low', note: 'Wire service, nonprofit cooperative' },
   'AFP': { risk: 'low', note: 'Wire service, editorially independent' },
@@ -576,7 +276,11 @@ const FULL_FEEDS: Record<string, Feed[]> = {
     { name: 'BBC Persian', url: rss('http://feeds.bbci.co.uk/persian/tv-and-radio-37434376/rss.xml') },
     { name: 'Iran International', url: rss('https://news.google.com/rss/search?q=site:iranintl.com+when:2d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Fars News', url: rss('https://news.google.com/rss/search?q=site:farsnews.ir+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'IRNA', url: rss('https://en.irna.ir/rss') },
+    { name: 'Mehr News', url: rss('https://en.mehrnews.com/rss') },
     { name: 'Haaretz', url: rss('https://news.google.com/rss/search?q=site:haaretz.com+when:7d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Jerusalem Post', url: rss('https://www.jpost.com/rss/rssfeedsheadlines.aspx') },
+    { name: 'Ynetnews', url: rss('https://www.ynetnews.com/Integration/StoryRss3089.xml') },
     { name: 'Arab News', url: rss('https://news.google.com/rss/search?q=site:arabnews.com+when:7d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'The National', url: rss('https://news.google.com/rss/search?q=site:thenationalnews.com+when:2d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Oman Observer', url: rss('https://www.omanobserver.om/rssFeed/1') },
@@ -988,7 +692,7 @@ const FINANCE_FEEDS: Record<string, Feed[]> = {
     { name: 'Blockworks', url: rss('https://blockworks.co/feed') },
     { name: 'The Defiant', url: rss('https://thedefiant.io/feed') },
     { name: 'Bitcoin Magazine', url: rss('https://bitcoinmagazine.com/feed') },
-    { name: 'DL News', url: rss('https://www.dlnews.com/feed/') },
+    { name: 'DL News', url: rss('https://news.google.com/rss/search?q=site:dlnews.com+when:3d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'CryptoSlate', url: rss('https://cryptoslate.com/feed/') },
     { name: 'Unchained', url: rss('https://unchainedcrypto.com/feed/') },
     { name: 'Wu Blockchain', url: rss('https://news.google.com/rss/search?q=site:wublockchain.com+when:7d&hl=en-US&gl=US&ceid=US:en') },
@@ -1025,7 +729,7 @@ const FINANCE_FEEDS: Record<string, Feed[]> = {
     { name: 'Trading Tech', url: rss('https://news.google.com/rss/search?q=("algorithmic+trading"+OR+"trading+platform"+OR+"quantitative+finance")+when:7d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Blockchain Finance', url: rss('https://news.google.com/rss/search?q=("blockchain+finance"+OR+"tokenization"+OR+"digital+securities"+OR+CBDC)+when:7d&hl=en-US&gl=US&ceid=US:en') },
   ],
-  regulation: [
+  'fin-regulation': [
     { name: 'SEC', url: rss('https://www.sec.gov/news/pressreleases.rss') },
     { name: 'Financial Regulation', url: rss('https://news.google.com/rss/search?q=(SEC+OR+CFTC+OR+FINRA+OR+FCA)+regulation+OR+enforcement+when:3d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'Banking Rules', url: rss('https://news.google.com/rss/search?q=(Basel+OR+"capital+requirements"+OR+"banking+regulation")+when:7d&hl=en-US&gl=US&ceid=US:en') },
@@ -1112,6 +816,8 @@ const COMMODITY_FEEDS: Record<string, Feed[]> = {
     { name: 'World Gold Council', url: rss('https://news.google.com/rss/search?q="World+Gold+Council"+OR+"central+bank+gold"+OR+"gold+reserves"+when:7d&hl=en-US&gl=US&ceid=US:en') },
     { name: 'GoldSeek', url: rss('https://news.goldseek.com/GoldSeek/rss.xml') },
     { name: 'SilverSeek', url: rss('https://news.silverseek.com/SilverSeek/rss.xml') },
+    { name: 'Gold Silver Worlds', url: rss('https://goldsilverworlds.com/feed/') },
+    { name: 'FX Empire Gold', url: rss('https://www.fxempire.com/api/v1/en/markets/commodity/Gold/news/feed') },
   ],
   energy: [
     { name: 'OilPrice.com', url: rss('https://oilprice.com/rss/main') },
@@ -1184,6 +890,39 @@ const COMMODITY_FEEDS: Record<string, Feed[]> = {
   ],
 };
 
+// Energy variant feeds — energy.worldmonitor.app
+// Keys are matched against panel IDs in src/config/panels.ts ENERGY_PANELS +
+// brief news-category overrides in src/app/data-loader.ts. Keep in sync when
+// ENERGY_PANELS changes.
+const ENERGY_FEEDS: Record<string, Feed[]> = {
+  'live-news': [
+    { name: 'OilPrice.com',          url: rss('https://oilprice.com/rss/main') },
+    { name: 'Rigzone',               url: rss('https://www.rigzone.com/news/rss/rigzone_latest.aspx') },
+    { name: 'Reuters Energy',        url: rss('https://news.google.com/rss/search?q=site:reuters.com+(oil+OR+gas+OR+energy+OR+OPEC+OR+pipeline+OR+LNG)+when:1d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Bloomberg Energy',      url: rss('https://news.google.com/rss/search?q=site:bloomberg.com+(oil+OR+gas+OR+energy+OR+pipeline+OR+LNG)+when:1d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'FT Energy',             url: rss('https://news.google.com/rss/search?q=site:ft.com+(oil+OR+gas+OR+energy+OR+LNG+OR+OPEC)+when:1d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'IEA News',              url: rss('https://news.google.com/rss/search?q=site:iea.org+(oil+OR+gas+OR+energy)+when:3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'S&P Global Platts',     url: rss('https://news.google.com/rss/search?q=site:spglobal.com+(oil+OR+gas+OR+LNG+OR+pipeline)+when:2d&hl=en-US&gl=US&ceid=US:en') },
+  ],
+  energy: [
+    { name: 'OilPrice.com',          url: rss('https://oilprice.com/rss/main') },
+    { name: 'Rigzone',               url: rss('https://www.rigzone.com/news/rss/rigzone_latest.aspx') },
+    { name: 'EIA Press Room',        url: rss('https://www.eia.gov/rss/press_room.xml') },
+    { name: 'OPEC & Crude',          url: rss('https://news.google.com/rss/search?q=(OPEC+OR+"oil+price"+OR+"crude+oil"+OR+WTI+OR+Brent+OR+"oil+production"+OR+"oil+inventory")+when:1d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Natural Gas & LNG',     url: rss('https://news.google.com/rss/search?q=("natural+gas"+OR+LNG+OR+"gas+price"+OR+"Henry+Hub"+OR+TTF+OR+JKM+OR+"LNG+cargo")+when:1d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Pipelines & Chokepoints', url: rss('https://news.google.com/rss/search?q=(pipeline+OR+Druzhba+OR+"Nord+Stream"+OR+TurkStream+OR+"Strait+of+Hormuz"+OR+"Bab+el-Mandeb"+OR+"Suez+Canal"+OR+"Power+of+Siberia")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Energy Crisis & Shortages', url: rss('https://news.google.com/rss/search?q=("fuel+shortage"+OR+"gas+shortage"+OR+"diesel+shortage"+OR+"jet+fuel+shortage"+OR+"energy+crisis"+OR+rationing+OR+"petrol+shortage")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Refinery & Disruptions', url: rss('https://news.google.com/rss/search?q=(refinery+OR+"refinery+outage"+OR+"force+majeure"+OR+"pipeline+sabotage"+OR+"pipeline+attack")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Energy Intel',          url: rss('https://news.google.com/rss/search?q=(energy+commodities+OR+"energy+market"+OR+"energy+prices"+OR+"energy+security")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+  ],
+  'supply-chain': [
+    { name: 'Tanker & Shipping', url: rss('https://news.google.com/rss/search?q=(tanker+OR+VLCC+OR+Suezmax+OR+Aframax+OR+"oil+shipping"+OR+"LNG+carrier"+OR+"shadow+fleet")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Strategic Chokepoints', url: rss('https://news.google.com/rss/search?q=("Strait+of+Hormuz"+OR+"Strait+of+Malacca"+OR+"Bab+el-Mandeb"+OR+"Suez+Canal"+OR+"Panama+Canal"+OR+"Turkish+Straits"+OR+"Danish+Straits")+when:2d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Energy Sanctions',  url: rss('https://news.google.com/rss/search?q=("oil+sanctions"+OR+"gas+sanctions"+OR+"price+cap"+OR+"energy+embargo"+OR+"LNG+sanctions")+when:3d&hl=en-US&gl=US&ceid=US:en') },
+    { name: 'Port & Terminal',   url: rss('https://news.google.com/rss/search?q=("LNG+terminal"+OR+"crude+terminal"+OR+"oil+port"+OR+"Ras+Laffan"+OR+"Sabine+Pass"+OR+"Rotterdam+oil")+when:3d&hl=en-US&gl=US&ceid=US:en') },
+  ],
+};
+
 // Variant-aware exports
 export const FEEDS = SITE_VARIANT === 'tech'
   ? TECH_FEEDS
@@ -1193,7 +932,9 @@ export const FEEDS = SITE_VARIANT === 'tech'
       ? HAPPY_FEEDS
       : SITE_VARIANT === 'commodity'
         ? COMMODITY_FEEDS
-        : FULL_FEEDS;
+        : SITE_VARIANT === 'energy'
+          ? ENERGY_FEEDS
+          : FULL_FEEDS;
 
 export const SOURCE_REGION_MAP: Record<string, { labelKey: string; feedKeys: string[] }> = {
   // Full (geopolitical) variant regions
@@ -1224,7 +965,7 @@ export const SOURCE_REGION_MAP: Record<string, { labelKey: string; feedKeys: str
   cryptoDigital: { labelKey: 'header.sourceRegionCryptoDigital', feedKeys: ['crypto', 'fintech'] },
   centralBanksEcon: { labelKey: 'header.sourceRegionCentralBanks', feedKeys: ['centralbanks', 'economic'] },
   dealsCorpFin: { labelKey: 'header.sourceRegionDeals', feedKeys: ['institutional', 'derivatives'] },
-  finRegulation: { labelKey: 'header.sourceRegionFinRegulation', feedKeys: ['regulation'] },
+  finRegulation: { labelKey: 'header.sourceRegionFinRegulation', feedKeys: ['fin-regulation'] },
   gulfMena: { labelKey: 'header.sourceRegionGulfMena', feedKeys: ['gccNews'] },
 };
 
@@ -1236,7 +977,7 @@ export const INTEL_SOURCES: Feed[] = [
   { name: 'Janes', url: rss('https://news.google.com/rss/search?q=site:janes.com+when:3d&hl=en-US&gl=US&ceid=US:en'), type: 'defense' },
   { name: 'Military Times', url: rss('https://www.militarytimes.com/arc/outboundfeeds/rss/?outputType=xml'), type: 'defense' },
   { name: 'Task & Purpose', url: rss('https://taskandpurpose.com/feed/'), type: 'defense' },
-  { name: 'USNI News', url: rss('https://news.usni.org/feed'), type: 'defense' },
+  { name: 'USNI News', url: rss('https://news.google.com/rss/search?q=site:news.usni.org+when:3d&hl=en-US&gl=US&ceid=US:en'), type: 'defense' },
   { name: 'gCaptain', url: rss('https://gcaptain.com/feed/'), type: 'defense' },
   { name: 'Oryx OSINT', url: rss('https://www.oryxspioenkop.com/feeds/posts/default?alt=rss'), type: 'defense' },
   { name: 'UK MOD', url: rss('https://www.gov.uk/government/organisations/ministry-of-defence.atom'), type: 'defense' },
@@ -1283,7 +1024,7 @@ export const DEFAULT_ENABLED_SOURCES: Record<string, string[]> = {
   politics: ['BBC World', 'Guardian World', 'AP News', 'Reuters World', 'CNN World'],
   us: ['Reuters US', 'NPR News', 'PBS NewsHour', 'ABC News', 'CBS News', 'NBC News', 'Wall Street Journal', 'Politico', 'The Hill'],
   europe: ['France 24', 'EuroNews', 'Le Monde', 'DW News', 'Tagesschau', 'ANSA', 'NOS Nieuws', 'SVT Nyheter'],
-  middleeast: ['BBC Middle East', 'Al Jazeera', 'Al Arabiya', 'Guardian ME', 'BBC Persian', 'Iran International', 'Haaretz', 'Asharq News', 'The National'],
+  middleeast: ['BBC Middle East', 'Al Jazeera', 'Al Arabiya', 'Guardian ME', 'BBC Persian', 'Iran International', 'IRNA', 'Mehr News', 'Haaretz', 'Jerusalem Post', 'Ynetnews', 'Asharq News', 'The National'],
   africa: ['BBC Africa', 'News24', 'Africanews', 'Jeune Afrique', 'Africa News', 'Premium Times', 'Channels TV', 'Sahel Crisis'],
   latam: ['BBC Latin America', 'Reuters LatAm', 'InSight Crime', 'Mexico News Daily', 'Clarín', 'Primicias', 'Infobae Americas', 'El Universo'],
   asia: ['BBC Asia', 'The Diplomat', 'South China Morning Post', 'Reuters Asia', 'Nikkei Asia', 'CNA', 'Asia News', 'The Hindu'],

@@ -2,13 +2,41 @@
 
 import { loadEnvFile, CHROME_UA, getRedisCredentials, runSeed } from './_seed-utils.mjs';
 import { clusterItems, selectTopStories } from './_clustering.mjs';
+import { extractCountryCode } from './shared/geo-extract.mjs';
+import { unwrapEnvelope } from './_seed-envelope-source.mjs';
+import { pickBriefCluster, briefSystemPrompt, briefUserPrompt } from './_insights-brief.mjs';
 
 loadEnvFile(import.meta.url);
 
 const CANONICAL_KEY = 'news:insights:v1';
 const DIGEST_KEY = 'news:digest:v1:full:en';
-const CACHE_TTL = 10800; // 3h — 6x the 30 min cron interval (was 1x = key expired on any missed run)
-const MAX_HEADLINES = 10;
+
+// Defense-in-depth auth — see seed-infra.mjs for the same pattern + rationale.
+// Set WORLDMONITOR_RELAY_KEY on the Railway service (must match a value in
+// Vercel's WORLDMONITOR_VALID_KEYS). Origin alone is no longer reliable
+// because CF/Vercel intermediaries may strip it and CF can cache the 401.
+const RELAY_API_KEY = process.env.WORLDMONITOR_RELAY_KEY || '';
+
+// Digest items store proto enum strings (THREAT_LEVEL_HIGH etc.) from toProtoItem().
+// Normalize to client-side lowercase values before propagating into insights output.
+const PROTO_TO_LEVEL = {
+  THREAT_LEVEL_CRITICAL: 'critical',
+  THREAT_LEVEL_HIGH: 'high',
+  THREAT_LEVEL_MEDIUM: 'medium',
+  THREAT_LEVEL_LOW: 'low',
+  THREAT_LEVEL_UNSPECIFIED: 'info',
+};
+
+function normalizeThreat(threat) {
+  if (!threat) return undefined;
+  const level = PROTO_TO_LEVEL[threat.level] ?? threat.level;
+  return { ...threat, level };
+}
+
+const CACHE_TTL = 10800; // 3h — 6x the 30 min cron interval. Shorter = key expires on any missed
+                         // cron tick and /api/bootstrap loses insights entirely. Bad brief content
+                         // is gated at brief-selection time (see pickBriefCluster + briefSystemPrompt
+                         // in _insights-brief.mjs), not by aging out fast.
 const MAX_HEADLINE_LEN = 500;
 const GROQ_MODEL = 'llama-3.1-8b-instant';
 
@@ -42,7 +70,7 @@ async function readDigestFromRedis() {
   });
   if (!resp.ok) return null;
   const data = await resp.json();
-  return data.result ? JSON.parse(data.result) : null;
+  return data.result ? unwrapEnvelope(JSON.parse(data.result)).data : null;
 }
 
 async function readExistingInsights() {
@@ -53,7 +81,7 @@ async function readExistingInsights() {
   });
   if (!resp.ok) return null;
   const data = await resp.json();
-  return data.result ? JSON.parse(data.result) : null;
+  return data.result ? unwrapEnvelope(JSON.parse(data.result)).data : null;
 }
 
 // Provider config — mirrors server/_shared/llm.ts getProviderCredentials()
@@ -91,23 +119,9 @@ const LLM_PROVIDERS = [
   },
 ];
 
-async function callLLM(headlines) {
-  const headlineText = headlines.map((h, i) => `${i + 1}. ${h}`).join('\n');
-  const dateContext = `Current date: ${new Date().toISOString().split('T')[0]}. Provide geopolitical context appropriate for the current date.`;
-
-  const systemPrompt = `${dateContext}
-
-Summarize the single most important headline in 2 concise sentences MAX (under 60 words total).
-Rules:
-- Each numbered headline below is a SEPARATE, UNRELATED story
-- Pick the ONE most significant headline and summarize ONLY that story
-- NEVER combine or merge people, places, or facts from different headlines into one sentence
-- Lead with WHAT happened and WHERE - be specific
-- NEVER start with "Breaking news", "Good evening", "Tonight", or TV-style openings
-- Start directly with the subject of the chosen headline
-- No bullet points, no meta-commentary, no elaboration beyond the core facts`;
-
-  const userPrompt = `Each headline below is a separate story. Pick the most important ONE and summarize only that story:\n${headlineText}`;
+async function callLLM(headline) {
+  const systemPrompt = briefSystemPrompt(new Date().toISOString().split('T')[0]);
+  const userPrompt = briefUserPrompt(headline);
 
   for (const provider of LLM_PROVIDERS) {
     const envVal = process.env[provider.envKey];
@@ -127,7 +141,7 @@ Rules:
             { role: 'user', content: userPrompt },
           ],
           max_tokens: 300,
-          temperature: 0.3,
+          temperature: 0.1,
           ...provider.extraBody,
         }),
         signal: AbortSignal.timeout(provider.timeout),
@@ -188,13 +202,21 @@ function categorizeStory(title) {
 
 async function warmDigestCache() {
   const apiBase = process.env.API_BASE_URL || 'https://api.worldmonitor.app';
+  const headers = {
+    'User-Agent': CHROME_UA,
+    Origin: 'https://worldmonitor.app',
+  };
+  if (RELAY_API_KEY) headers['X-WorldMonitor-Key'] = RELAY_API_KEY;
   try {
     const resp = await fetch(`${apiBase}/api/news/v1/list-feed-digest?variant=full&lang=en`, {
-      headers: { 'User-Agent': CHROME_UA },
+      headers,
       signal: AbortSignal.timeout(30_000),
     });
     if (resp.ok) console.log('  Digest cache warmed via RPC');
-    else console.warn(`  Digest warm failed: HTTP ${resp.status}`);
+    else {
+      const keyNote = RELAY_API_KEY ? '' : ' (WORLDMONITOR_RELAY_KEY not set — Origin-only auth)';
+      console.warn(`  Digest warm failed: HTTP ${resp.status}${keyNote}`);
+    }
   } catch (err) {
     console.warn(`  Digest warm failed: ${err.message}`);
   }
@@ -246,6 +268,7 @@ async function fetchInsights() {
     pubDate: item.pubDate || item.publishedAt || item.date || new Date().toISOString(),
     isAlert: item.isAlert || false,
     tier: item.tier,
+    threat: normalizeThreat(item.threat),
   })).filter(item => item.title.length > 10);
 
   const clusters = clusterItems(normalizedItems);
@@ -256,31 +279,47 @@ async function fetchInsights() {
 
   if (topStories.length === 0) throw new Error('No top stories after scoring');
 
-  const headlines = topStories
-    .slice(0, MAX_HEADLINES)
-    .map(s => sanitizeTitle(s.primaryTitle));
+  // Corroboration gate: only brief a story at least two outlets have reported.
+  // See pickBriefCluster() in _insights-brief.mjs for rationale + unit tests.
+  // Note: this gates ONLY brief generation — the topStories payload itself
+  // continues to include single-source clusters, rendered as the headline list
+  // under the brief. The brief paragraph is the one surface where corroboration
+  // matters; the list is already visually marked with per-story sourceCount.
+  const briefCluster = pickBriefCluster(topStories);
+  const topHeadline = briefCluster ? sanitizeTitle(briefCluster.primaryTitle) : '';
 
   let worldBrief = '';
   let briefProvider = '';
   let briefModel = '';
   let status = 'ok';
 
-  const llmResult = await callLLM(headlines);
-  if (llmResult) {
-    worldBrief = llmResult.text;
-    briefProvider = llmResult.provider;
-    briefModel = llmResult.model;
-    console.log(`  Brief generated via ${briefProvider} (${briefModel})`);
-  } else {
+  if (!topHeadline) {
     status = 'degraded';
-    console.warn('  No LLM available — publishing degraded (stories without brief)');
+    console.warn('  No multi-source cluster available — publishing degraded (stories without brief)');
+  } else {
+    const llmResult = await callLLM(topHeadline);
+    if (llmResult) {
+      worldBrief = llmResult.text;
+      briefProvider = llmResult.provider;
+      briefModel = llmResult.model;
+      console.log(`  Brief generated via ${briefProvider} (${briefModel})`);
+    } else {
+      status = 'degraded';
+      console.warn('  No LLM available — publishing degraded (stories without brief)');
+    }
   }
 
   const multiSourceCount = clusters.filter(c => c.sourceCount >= 2).length;
   const fastMovingCount = 0; // velocity not available in digest items
 
   const enrichedStories = topStories.map(story => {
-    const { category, threatLevel } = categorizeStory(story.primaryTitle);
+    // Use digest threat when present and not keyword-sourced (keyword threat uses old taxonomy).
+    // Fall back to categorizeStory() for legacy/incomplete payloads.
+    const hasDigestThreat = story.threat?.level && story.threat?.source !== 'keyword';
+    const { category, threatLevel } = hasDigestThreat
+      ? { category: story.threat.category ?? 'general', threatLevel: story.threat.level }
+      : categorizeStory(story.primaryTitle);
+    const countryCode = extractCountryCode(story.primaryTitle) ?? null;
     return {
       primaryTitle: story.primaryTitle,
       primarySource: story.primarySource,
@@ -292,6 +331,7 @@ async function fetchInsights() {
       isAlert: story.isAlert,
       category,
       threatLevel,
+      countryCode,
     };
   });
 
@@ -323,10 +363,18 @@ function validate(data) {
   return Array.isArray(data?.topStories) && data.topStories.length >= 1;
 }
 
+export function declareRecords(data) {
+  return Array.isArray(data?.topStories) ? data.topStories.length : 0;
+}
+
 runSeed('news', 'insights', CANONICAL_KEY, fetchInsights, {
   validateFn: validate,
   ttlSeconds: CACHE_TTL,
   sourceVersion: 'digest-clustering-v1',
+
+  declareRecords,
+  schemaVersion: 1,
+  maxStaleMin: 30,
 }).catch((err) => {
   const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : ''; console.error('FATAL:', (err.message || err) + _cause);
   // Exit gracefully for cron — health endpoint flags stale data via seed-meta.

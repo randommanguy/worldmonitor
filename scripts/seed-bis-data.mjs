@@ -29,7 +29,24 @@ const KEYS = {
   credit:   'economic:bis:credit:v1',
 };
 
-const TTL = 43200; // 12 hours
+// 36 hours = 3× the bundle's 12h interval gate (seed-bundle-macro.mjs:5,
+// `intervalMs: 12 * HOUR`). Per the gold-standard "TTL >= 3× cron interval"
+// recipe — earlier TTL=43200 (12h) matched the gate exactly, so any cron
+// drift left the canonical key TTL'd-out for a window where /api/health
+// reported `economic:bis:policy:v1`/`eer:v1`/`credit:v1` as missing while
+// `seed-meta:economic:bis` still carried last-good `recordCount` (verified
+// 2026-05-06: seed-meta showed recordCount=11 + a recent fetchedAt, but
+// all 3 canonical GETs returned nil from Upstash because the bundle ran
+// ~13.7h after the last successful tick instead of exactly 12h). 36h
+// covers cron drift + one degraded-to-24h cycle (matches the rationale
+// already applied to bisDsr/bisProperty* maxStaleMin in api/health.js
+// circa 2026-04-27, just on the canonical-key-TTL side instead of the
+// health-threshold side).
+//
+// All 3 canonical writes (policy via atomicPublish, eer + credit via
+// writeExtraKey in afterPublish) reuse this constant, so the bump fixes
+// all three simultaneously.
+const TTL = 129600;
 
 async function fetchBisCSV(dataset, key) {
   const separator = key.includes('?') ? '&' : '?';
@@ -188,7 +205,6 @@ async function fetchCreditToGdp() {
 }
 
 // --- Main seed ---
-let seedData = null;
 
 async function fetchAll() {
   const [policy, exchange, credit] = await Promise.all([
@@ -196,25 +212,46 @@ async function fetchAll() {
     fetchExchangeRates(),
     fetchCreditToGdp(),
   ]);
-  seedData = { policy, exchange, credit };
   const total = (policy?.rates?.length || 0) + (exchange?.rates?.length || 0) + (credit?.entries?.length || 0);
   if (total === 0) throw new Error('All BIS fetches returned empty');
-  return seedData;
+  return { policy, exchange, credit };
 }
 
+// validateFn receives the post-transform data ({ rates: [...] }), not the raw fetchAll shape.
 function validate(data) {
-  return data?.policy || data?.exchange || data?.credit;
+  return Array.isArray(data?.rates) && data.rates.length > 0;
 }
 
-runSeed('economic', 'bis', KEYS.policy, fetchAll, {
-  validateFn: validate,
-  ttlSeconds: TTL,
-  sourceVersion: 'bis-sdmx-csv',
-}).then(async (result) => {
-  if (result?.skipped || !seedData) return;
-  if (seedData.exchange) await writeExtraKey(KEYS.exchange, seedData.exchange, TTL);
-  if (seedData.credit) await writeExtraKey(KEYS.credit, seedData.credit, TTL);
-}).catch((err) => {
-  const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : ''; console.error('FATAL:', (err.message || err) + _cause);
-  process.exit(1);
-});
+// Contract: canonical key stores bis policy rates; declareRecords sees the
+// post-transform `{rates: [...]}` shape, same as validateFn.
+export function declareRecords(data) {
+  return Array.isArray(data?.rates) ? data.rates.length : 0;
+}
+
+// publishTransform: store only policy data (correct shape) at canonical key.
+// runSeed() calls process.exit(0) — .then() is unreachable; use afterPublish instead.
+function publishTransform(data) {
+  return data.policy ?? { rates: [] };
+}
+
+async function afterPublish(data) {
+  if (data.exchange) await writeExtraKey(KEYS.exchange, data.exchange, TTL);
+  if (data.credit) await writeExtraKey(KEYS.credit, data.credit, TTL);
+}
+
+if (process.argv[1]?.endsWith('seed-bis-data.mjs')) {
+  runSeed('economic', 'bis', KEYS.policy, fetchAll, {
+    validateFn: validate,
+    ttlSeconds: TTL,
+    sourceVersion: 'bis-sdmx-csv',
+    declareRecords,
+    schemaVersion: 1,
+    maxStaleMin: 10080,
+    publishTransform,
+    afterPublish,
+  }).catch((err) => {
+    const _cause = err.cause ? ` (cause: ${err.cause.message || err.cause.code || err.cause})` : '';
+    console.error('FATAL:', (err.message || err) + _cause);
+    process.exit(1);
+  });
+}

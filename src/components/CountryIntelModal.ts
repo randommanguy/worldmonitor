@@ -2,6 +2,7 @@
  * CountryIntelModal - Shows AI-generated intelligence brief when user clicks a country
  */
 import { escapeHtml } from '@/utils/sanitize';
+import { formatIntelBrief } from '@/utils/format-intel-brief';
 import { t } from '@/services/i18n';
 import { sanitizeUrl } from '@/utils/sanitize';
 import { getCSSColor } from '@/utils';
@@ -50,6 +51,8 @@ export class CountryIntelModal {
   constructor() {
     this.overlay = document.createElement('div');
     this.overlay.className = 'country-intel-overlay';
+    this.overlay.setAttribute('role', 'dialog');
+    this.overlay.setAttribute('aria-modal', 'true');
     this.overlay.innerHTML = `
       <div class="country-intel-modal">
         <div class="country-intel-header">
@@ -255,12 +258,7 @@ export class CountryIntelModal {
   }
 
   private formatBrief(text: string): string {
-    return escapeHtml(text)
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br>')
-      .replace(/^/, '<p>')
-      .replace(/$/, '</p>');
+    return formatIntelBrief(text);
   }
 
   public hide(): void {
